@@ -14,7 +14,7 @@ def desktop_quote(value):
 def main():
     parser = argparse.ArgumentParser(description='安装清晰截图到当前用户的应用菜单')
     parser.add_argument('--prefix', type=Path, default=Path.home()/'.local', help='安装前缀，默认 ~/.local')
-    parser.add_argument('--shortcut', action='store_true', help='注册 GNOME 全局快捷键 Alt/Option + 2')
+    parser.add_argument('--shortcut', action='store_true', help='注册保存的全局截图快捷键（默认 Alt/Option + 2）')
     args = parser.parse_args()
     project = Path(__file__).resolve().parent
     prefix = args.prefix.expanduser().resolve()
@@ -29,16 +29,15 @@ def main():
     if args.shortcut:
         if prefix != (Path.home()/'.local').resolve():
             parser.error('--shortcut 仅适用于默认用户安装目录')
-        from gi.repository import Gio
-        settings = Gio.Settings.new('org.gnome.settings-daemon.plugins.media-keys')
-        paths = list(settings.get_strv('custom-keybindings'))
-        path = '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/clearshot/'
-        schema = 'org.gnome.settings-daemon.plugins.media-keys.custom-keybinding'
-        for existing in paths:
-            item = Gio.Settings.new_with_path(schema, existing)
-            if existing != path and item.get_string('binding').lower() == '<alt>2':
-                parser.error('Alt + 2 已被其他全局快捷键使用，未修改快捷键。')
-        shortcut_settings = (Gio, settings, paths, path, schema)
+        from preferences import PreferenceStore, ShortcutManager
+        manager = ShortcutManager()
+        if not manager.available:
+            parser.error('当前桌面不支持配置 GNOME 全局快捷键。')
+        binding = manager.current() or PreferenceStore().load().capture_shortcut or '<Alt>2'
+        conflict = manager.conflict(binding)
+        if conflict:
+            parser.error('快捷键已被占用：'+conflict)
+        shortcut_settings = (manager, binding)
     for destination in (launcher, desktop, icon):
         destination.parent.mkdir(parents=True, exist_ok=True)
     launcher.write_text('#!/bin/sh\n# Clearshot user launcher\nexec /usr/bin/python3 ' + shlex.quote(str(project/'app.py')) + ' "$@"\n')
@@ -48,23 +47,18 @@ def main():
         '[Desktop Entry]\nType=Application\nName=清晰截图\nName[en]=Clearshot\n'
         'Comment=系统截图与原图标注\nExec=' + desktop_quote(launcher) + '\n'
         'Icon=' + str(icon) + '\nTerminal=false\nStartupNotify=true\nCategories=Graphics;\n'
-        'Actions=Capture;Clipboard;\n\n[Desktop Action Capture]\nName=新截图\nExec=' + desktop_quote(launcher) + ' --capture\n'
-        '\n[Desktop Action Clipboard]\nName=编辑剪贴板图片\nExec=' + desktop_quote(launcher) + ' --clipboard\n')
+        'Actions=Capture;Clipboard;Settings;\n\n[Desktop Action Capture]\nName=新截图\nExec=' + desktop_quote(launcher) + ' --capture\n'
+        '\n[Desktop Action Clipboard]\nName=编辑剪贴板图片\nExec=' + desktop_quote(launcher) + ' --clipboard\n'
+        '\n[Desktop Action Settings]\nName=设置\nExec=' + desktop_quote(launcher) + ' --settings\n')
     if shortcut_settings:
-        Gio, settings, paths, path, schema = shortcut_settings
-        item = Gio.Settings.new_with_path(schema, path)
-        item.set_string('name', '清晰截图')
-        item.set_string('command', shlex.quote(str(launcher)) + ' --capture')
-        item.set_string('binding', '<Alt>2')
-        if path not in paths:
-            settings.set_strv('custom-keybindings', paths+[path])
-        Gio.Settings.sync()
+        manager, binding = shortcut_settings
+        manager.apply(binding)
     if shutil.which('update-desktop-database'):
         subprocess.run(['update-desktop-database', str(desktop.parent)], check=False)
     print('已安装：', desktop)
     print('源码保留在：', project, '（移动源码目录后请重新运行安装脚本）')
     if args.shortcut:
-        print('快捷键：Alt / Option + 2')
+        print('快捷键：', binding)
 
 
 if __name__ == '__main__':

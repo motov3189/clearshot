@@ -28,6 +28,8 @@ cd clearshot
 
 默认不会修改快捷键，只有指定 `--shortcut` 时才注册。如果 Alt + 2 已被其他自定义全局快捷键使用，脚本会停止并提示。
 
+程序设置中可以修改快捷键。再次运行 `install.py --shortcut` 会优先保留当前已注册的快捷键，不会把自定义组合键强制改回 Alt + 2。
+
 不安装菜单入口也可直接运行 `/usr/bin/python3 app.py` 或 `/usr/bin/python3 app.py --capture`。其他桌面需要可用的 Screenshot Portal，尚未逐一验证。
 
 ## 使用
@@ -43,6 +45,23 @@ cd clearshot
 - 选中标注后，工具栏的颜色、线宽和字号会作用于该标注；`Delete` 删除，`Esc` 取消选择，方向键微调（`Shift` + 方向键移动 10 像素）。
 - `Ctrl + 鼠标滚轮` 缩放预览；工具栏也提供“适应窗口”和“100%”。预览缩放不改变导出尺寸。
 - 默认保存目录为 `~/Pictures/Clearshot/`。只在明确选择保存后写入图片。
+
+## 设置
+
+点击窗口顶部的 **⚙ 设置**，或运行 `clearshot --settings`。应用菜单的右键操作中也有“设置”入口。
+
+![设置窗口，使用隔离测试中的示例配置](docs/settings.png)
+
+可以自行调整：
+
+- **全局截图快捷键**：启用或关闭；点击“录制”后按组合键，也可填写 `Alt+3`、`Ctrl+Shift+A` 等形式。Mac 键盘的 Option 对应 Alt。
+- **默认保存目录**：选择已有目录，或填写新的绝对路径、`~/` 路径；保存图片时再创建目录。
+- **新图片默认工具和样式**：工具、颜色、线宽、文字字号；已有标注不会因修改设置而被改写。
+- **截图延迟**：0–10 秒，方便先打开菜单再截图。
+
+点击“保存设置”后立即保存；快捷键在 GNOME 下直接生效，无需重启。程序会检查 GNOME 系统和自定义全局快捷键冲突；遇到冲突时保留原设置。如果快捷键已被系统拦截，无法录制，可直接填写组合键。设置窗口打开时，再按截图快捷键会回到设置窗口。
+
+个人设置位于 `~/.config/clearshot/settings.json`（遵循 `XDG_CONFIG_HOME`）。该文件不在项目目录内，不会同步到 GitHub。文件写入失败时会恢复原来的快捷键；读取损坏的设置时先使用默认值，取消不会覆盖原文件。
 
 ## 清晰度
 
@@ -66,6 +85,7 @@ cd clearshot
 clearshot                  # 编辑器
 clearshot --capture        # 系统截图后编辑
 clearshot --clipboard      # 编辑剪贴板图片
+clearshot --settings       # 打开设置窗口
 clearshot /绝对路径/图片.png
 clearshot --demo           # 4K 示例，标注可直接调整，不截取桌面
 ```
@@ -78,6 +98,8 @@ sudo apt install xvfb dbus-x11
 GDK_BACKEND=x11 NO_AT_BRIDGE=1 xvfb-run -a /usr/bin/python3 tests/smoke_editor.py /tmp/clearshot-smoke
 GDK_BACKEND=x11 GDK_SCALE=2 NO_AT_BRIDGE=1 xvfb-run -a \
   -s '-screen 0 2560x1920x24' /usr/bin/python3 tests/smoke_editor.py /tmp/clearshot-smoke-hidpi
+GDK_BACKEND=x11 NO_AT_BRIDGE=1 xvfb-run -a \
+  /usr/bin/python3 tests/smoke_settings.py /tmp/clearshot-settings-smoke
 ```
 
 截图使用 [XDG Desktop Portal Screenshot v2](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.Screenshot.html)，支持取消、错误响应与超时，订阅响应信号后再提交截图请求。Portal 测试使用私有 D-Bus 连接，不受当前桌面会话中的真实 Portal 干扰。
@@ -85,3 +107,5 @@ GDK_BACKEND=x11 GDK_SCALE=2 NO_AT_BRIDGE=1 xvfb-run -a \
 ## 本机验证结果
 
 2026-10-28：用户已在系统 125% 缩放下验证 Option + 2 → 系统截图 → 编辑 → PNG 保存，确认截图清晰、标注位置和保存均正常。2026-10-28 的可编辑标注版本新增 13 项单元/Portal 测试，全部通过；普通与 `GDK_SCALE=2` 的独立 GTK 窗口测试均通过，包括多种预览比例下的裁剪坐标、标注拖动/缩放手柄、文字重复编辑、4K 导出、剪贴板往返和贴图。
+
+2026-11-05：新增设置窗口、个人配置持久化与全局快捷键管理测试。快捷键测试使用独立的内存设置后端，不会改动真实桌面。每次功能改动的文档和同步记录见 [CHANGELOG](CHANGELOG.md)。

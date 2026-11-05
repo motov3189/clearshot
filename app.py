@@ -23,6 +23,7 @@ from PIL import Image, ImageDraw
 
 from document import (Document, ViewTransform, annotation_bounds, annotation_hit,
                       draw_annotation, points_bounds, text_extent)
+from preferences import PreferenceStore, ShortcutManager
 
 APP_ID = 'org.alex.Clearshot'
 LOG = logging.getLogger('clearshot')
@@ -676,12 +677,15 @@ class Editor(Gtk.ApplicationWindow):
         self.set_default_size(1160, 800)
         self.document = None
         self.filename = None
-        self.tool = 'select'
-        self.color = (0.92, 0.2, 0.22, 1)
-        self.stroke_width = 5
-        self.text_size = 32
+        self.tool = app.preferences.default_tool
+        rgba = Gdk.RGBA()
+        rgba.parse(app.preferences.color)
+        self.color = (rgba.red, rgba.green, rgba.blue, 1)
+        self.stroke_width = app.preferences.line_width
+        self.text_size = app.preferences.text_size
         self._syncing = False
         self.pin_windows = []
+        self.settings_dialog = None
         self.connect('delete-event', self.closing)
         self.connect('destroy', self._destroyed)
         self.connect('key-press-event', self.key)
@@ -695,6 +699,8 @@ class Editor(Gtk.ApplicationWindow):
         header.pack_end(self.save_button)
         header.pack_end(self.button('复制', self.copy))
         header.pack_end(self.button('贴图', self.pin))
+        self.settings_button = self.button('⚙ 设置', self.open_settings)
+        header.pack_end(self.settings_button)
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.add(root)
         toolbar = Gtk.Box(spacing=4)
@@ -711,6 +717,7 @@ class Editor(Gtk.ApplicationWindow):
             b.connect('toggled', self.select_tool, tool)
             toolbar.pack_start(b, False, False, 0)
             self.tool_buttons[tool] = b
+        self.tool_buttons[app.preferences.default_tool].set_active(True)
         toolbar.pack_start(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL), False, False, 6)
         color = Gdk.RGBA(*self.color)
         self.color_button = Gtk.ColorButton.new_with_rgba(color)
@@ -784,6 +791,37 @@ class Editor(Gtk.ApplicationWindow):
         b = Gtk.Button.new_with_label(label)
         b.connect('clicked', callback)
         return b
+
+    def open_settings(self, *_):
+        from settings_dialog import SettingsDialog
+        if self.settings_dialog:
+            self.settings_dialog.present()
+            return
+        self.canvas.cancel_tap_edit()
+        dialog = SettingsDialog(self)
+        self.settings_dialog = dialog
+        try:
+            while dialog.run() == Gtk.ResponseType.APPLY:
+                if dialog.save_changes():
+                    break
+        finally:
+            self.settings_dialog = None
+            dialog.destroy()
+
+    def apply_defaults(self, preferences):
+        rgba = Gdk.RGBA()
+        rgba.parse(preferences.color)
+        self.color = (rgba.red, rgba.green, rgba.blue, 1)
+        self.stroke_width = preferences.line_width
+        self.text_size = preferences.text_size
+        self._syncing = True
+        try:
+            self.color_button.set_rgba(rgba)
+            self.stroke.set_value(self.stroke_width)
+            self.font_size.set_value(self.text_size)
+        finally:
+            self._syncing = False
+        self.update_status()
 
     def select_tool(self, button, tool):
         if not button.get_active():
@@ -880,6 +918,8 @@ class Editor(Gtk.ApplicationWindow):
         self.canvas.fit = True
         self.canvas.selected_id = None
         self.canvas.manipulation = None
+        self.apply_defaults(self.get_application().preferences)
+        self.tool_buttons[self.get_application().preferences.default_tool].set_active(True)
         self.canvas.refresh()
         self.canvas.set_tool_cursor()
         self.stack.set_visible_child_name('canvas')
@@ -1073,8 +1113,13 @@ class Editor(Gtk.ApplicationWindow):
             action=Gtk.FileChooserAction.SAVE)
         dialog.add_buttons('取消', Gtk.ResponseType.CANCEL, '保存', Gtk.ResponseType.OK)
         dialog.set_do_overwrite_confirmation(True)
-        folder = Path.home()/'Pictures'/'Clearshot'
-        folder.mkdir(parents=True, exist_ok=True)
+        folder = Path(self.get_application().preferences.save_directory)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            dialog.destroy()
+            self.message('无法使用默认保存目录', str(exc), True)
+            return False
         dialog.set_current_folder(str(folder))
         dialog.set_current_name('截图_' + datetime.now().strftime('%Y-%m-%d_%H-%M-%S') + '.png')
         result = False
@@ -1225,6 +1270,9 @@ class App(Gtk.Application):
         self.editor = None
         self.portal = None
         self.capture_pending = False
+        self.preference_store = PreferenceStore()
+        self.preferences = self.preference_store.load()
+        self.shortcut_manager = ShortcutManager()
 
     def do_startup(self):
         Gtk.Application.do_startup(self)
@@ -1252,7 +1300,11 @@ class App(Gtk.Application):
                 self.portal.cancel()
             self.quit()
             return 0
-        if '--capture' in args:
+        if '--settings' in args:
+            self.window().show_all()
+            self.window().present()
+            self.window().open_settings()
+        elif '--capture' in args:
             self.capture()
         elif '--clipboard' in args:
             self.window().show_all()
@@ -1273,6 +1325,9 @@ class App(Gtk.Application):
         return 0
 
     def capture(self):
+        if self.editor and self.editor.settings_dialog:
+            self.editor.settings_dialog.present()
+            return
         if self.portal or self.capture_pending:
             return
         if self.editor and not self.editor.can_replace():
@@ -1285,7 +1340,7 @@ class App(Gtk.Application):
         self.hold()
         self.capture_pending = True
         # Let the compositor remove this app before requesting a screenshot.
-        GLib.timeout_add(250, self._start_capture)
+        GLib.timeout_add(max(250, round(self.preferences.capture_delay*1000)), self._start_capture)
 
     def _start_capture(self):
         self.capture_pending = False

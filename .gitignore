@@ -1,0 +1,16 @@
+__pycache__/
+.deps/
+*.pyc
+.env
+.env.*
+*.log
+*.deb
+*.AppImage
+screenshots/
+captures/
+exports/
+*.png
+*.jpg
+*.jpeg
+*.webp
+!docs/editor.png

@@ -368,6 +368,8 @@ class Canvas(Gtk.DrawingArea):
         return None
 
     def point(self, event, clamp=True):
+        if self.editor.document is None:
+            return None
         x, y = self.transform.to_image(event.x, event.y)
         w, h = self.editor.document.size
         if not clamp and not (0 <= x <= w and 0 <= y <= h):
@@ -437,6 +439,11 @@ class Canvas(Gtk.DrawingArea):
         self.update_cursor(point, pressing=True)
 
     def motion(self, widget, event):
+        if self.editor.document is None:
+            self.points = []
+            self.manipulation = None
+            self.update_cursor(None)
+            return False
         if self.manipulation:
             point = self.point(event)
             if point is not None:

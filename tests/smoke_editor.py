@@ -202,7 +202,39 @@ quit_dialog.destroy()
 pump()
 assert quit_probe['code'] == 1 and quit_probe['visible'], quit_probe
 assert window.modal_dialogs == 0
+
+# A failed capture stays silent: nothing is opened and no error dialog appears.
+shown_messages = []
+original_message = window.message
+window.message = lambda *args, **kwargs: shown_messages.append(args)
+app.hold()
+app._captured(None, '模拟截图失败')
+pump()
+window.message = original_message
+assert shown_messages == [], shown_messages
+assert window.get_visible()
+assert app.portal is None
+
+# Quitting discards unsaved annotations without asking to save them first.
+window.document.annotate('rect', [(300, 300), (700, 500)], width=6)
+window.changed()
+assert window.document.dirty
+prompts = []
+original_can_replace = window.can_replace
+window.can_replace = lambda *args, **kwargs: prompts.append(args) or True
+assert window.closing() is False
+assert prompts == [], prompts
+quit_calls = []
+original_quit = app.quit
+app.quit = lambda *args, **kwargs: quit_calls.append(True)
+assert app.do_command_line(SimpleNamespace(get_arguments=lambda: ['clearshot', '--quit'])) == 0
+app.quit = original_quit
+window.can_replace = original_can_replace
+assert quit_calls == [True], quit_calls
+assert prompts == [], prompts
+
 window.destroy()
 print('PASS: GTK editor, crop coordinates at 25%, 62.5%, 125%, undo, 4K export, '
       'annotation drag/resize/text edit, clipboard round trip, pin window, '
-      'modal dialog stays visible across a capture request')
+      'modal dialog stays visible across a capture request, failed capture is '
+      'silent, unsaved annotations close without a prompt')

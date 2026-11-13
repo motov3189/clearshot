@@ -1254,7 +1254,9 @@ class Editor(Gtk.ApplicationWindow):
             # leaving the window in a state it cannot leave.
             self.present_modals()
             return True
-        return not self.can_replace()
+        # Quitting never asks about unsaved annotations; the current edits are
+        # simply discarded.
+        return False
 
     def _destroyed(self, *_):
         if hasattr(self, 'canvas'):
@@ -1365,8 +1367,6 @@ class App(Gtk.Application):
             LOG.info('Ignored command line while a capture is pending: %s', args)
             return 0
         if '--quit' in args:
-            if self.editor and not self.editor.can_replace():
-                return 1
             if self.portal:
                 self.portal.cancel()
             self.quit()
@@ -1439,9 +1439,9 @@ class App(Gtk.Application):
             for pin in self.editor.pin_windows:
                 pin.show_all()
         if error:
-            LOG.error('Screenshot failed: %s', error)
-            self.window().show_all()
-            self.window().message('无法获取系统截图', error, True)
+            # A failed capture stays silent: nothing is opened and no dialog is
+            # shown. When the app was only started to capture, it just exits.
+            LOG.info('Screenshot failed, nothing opened: %s', error)
         self.release()
 
 

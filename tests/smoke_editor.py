@@ -153,6 +153,56 @@ pump()
 assert len(window.pin_windows) == 1
 window.pin_windows[0].destroy()
 window.document.saved_revision = window.document.revision
+
+# Regression: a capture request while a modal dialog owns the GTK grab must not
+# hide the editor. On Wayland the later show_all() would raise the editor above
+# the dialog, leaving an invisible modal grab: the editor could neither be
+# edited nor closed.
+probe = {}
+
+
+def probe_capture_during_dialog():
+    probe['modal'] = window.modal_dialogs
+    probe['visible_before'] = window.get_visible()
+    app.capture()
+    probe['visible_after'] = window.get_visible()
+    probe['portal'] = app.portal
+    probe['pending'] = app.capture_pending
+    window.modal_stack[-1].response(Gtk.ResponseType.CLOSE)
+    return GLib.SOURCE_REMOVE
+
+
+GLib.timeout_add(100, probe_capture_during_dialog)
+window.message('模拟截图失败', '系统截图未完成，请重试或使用“打开图片”。', True)
+pump()
+assert probe['modal'] == 1, probe
+assert probe['visible_before'] and probe['visible_after'], probe
+assert probe['portal'] is None and not probe['pending'], probe
+assert window.modal_dialogs == 0
+
+# --quit has to report "busy" instead of destroying a window with a dialog open.
+quit_dialog = Gtk.MessageDialog(transient_for=window, modal=True,
+                                message_type=Gtk.MessageType.INFO,
+                                buttons=Gtk.ButtonsType.CLOSE, text='对话框占用中')
+quit_probe = {}
+
+
+def probe_quit_during_dialog():
+    quit_probe['code'] = app.do_command_line(SimpleNamespace(
+        get_arguments=lambda: ['clearshot', '--quit']))
+    quit_probe['visible'] = window.get_visible()
+    quit_dialog.response(Gtk.ResponseType.CLOSE)
+    return GLib.SOURCE_REMOVE
+
+
+GLib.timeout_add(100, probe_quit_during_dialog)
+with window.modal(quit_dialog):
+    quit_dialog.run()
+quit_dialog.destroy()
+pump()
+assert quit_probe['code'] == 1 and quit_probe['visible'], quit_probe
+assert window.modal_dialogs == 0
 window.destroy()
 print('PASS: GTK editor, crop coordinates at 25%, 62.5%, 125%, undo, 4K export, '
-      'annotation drag/resize/text edit, clipboard round trip, pin window')
+      'annotation drag/resize/text edit, clipboard round trip, pin window, '
+      'modal dialog stays visible across a capture request')

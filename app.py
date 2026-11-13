@@ -2,6 +2,7 @@
 """Clearshot: GNOME's screenshot portal plus a native, pixel-preserving editor."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 import io
 import logging
 import math
@@ -693,6 +694,8 @@ class Editor(Gtk.ApplicationWindow):
         self._syncing = False
         self.pin_windows = []
         self.settings_dialog = None
+        self.modal_dialogs = 0
+        self.modal_stack = []
         self.connect('delete-event', self.closing)
         self.connect('destroy', self._destroyed)
         self.connect('key-press-event', self.key)
@@ -799,6 +802,35 @@ class Editor(Gtk.ApplicationWindow):
         b.connect('clicked', callback)
         return b
 
+    @contextmanager
+    def modal(self, dialog=None):
+        """Track nested GTK dialog.run() loops.
+
+        The capture flow hides the editor window. If a dialog was running at the
+        same time, the later show_all()/present() could raise the editor above the
+        dialog on Wayland: the modal grab stayed, but the dialog was invisible, so
+        the editor could neither be edited nor closed. Callers must not hide the
+        window while this counter is non-zero.
+        """
+        self.modal_dialogs += 1
+        if dialog is not None:
+            self.modal_stack.append(dialog)
+        try:
+            yield
+        finally:
+            if dialog is not None:
+                try:
+                    self.modal_stack.remove(dialog)
+                except ValueError:
+                    pass
+            self.modal_dialogs -= 1
+
+    def present_modals(self):
+        """Bring the app back to front, raising the top dialog when one is running."""
+        self.present()
+        if self.modal_stack:
+            self.modal_stack[-1].present()
+
     def open_settings(self, *_):
         from settings_dialog import SettingsDialog
         if self.settings_dialog:
@@ -808,9 +840,10 @@ class Editor(Gtk.ApplicationWindow):
         dialog = SettingsDialog(self)
         self.settings_dialog = dialog
         try:
-            while dialog.run() == Gtk.ResponseType.APPLY:
-                if dialog.save_changes():
-                    break
+            with self.modal(dialog):
+                while dialog.run() == Gtk.ResponseType.APPLY:
+                    if dialog.save_changes():
+                        break
         finally:
             self.settings_dialog = None
             dialog.destroy()
@@ -900,8 +933,11 @@ class Editor(Gtk.ApplicationWindow):
             buttons=Gtk.ButtonsType.CLOSE, text=title)
         if detail:
             dialog.format_secondary_text(detail)
-        dialog.run()
-        dialog.destroy()
+        try:
+            with self.modal(dialog):
+                dialog.run()
+        finally:
+            dialog.destroy()
 
     def can_replace(self):
         if hasattr(self, 'canvas'):
@@ -915,8 +951,11 @@ class Editor(Gtk.ApplicationWindow):
         dialog.add_button('取消', Gtk.ResponseType.CANCEL)
         dialog.add_button('放弃标注', Gtk.ResponseType.REJECT)
         dialog.add_button('保存', Gtk.ResponseType.ACCEPT)
-        answer = dialog.run()
-        dialog.destroy()
+        try:
+            with self.modal(dialog):
+                answer = dialog.run()
+        finally:
+            dialog.destroy()
         return answer == Gtk.ResponseType.REJECT or answer == Gtk.ResponseType.ACCEPT and self.save()
 
     def load(self, image, filename=None):
@@ -957,7 +996,9 @@ class Editor(Gtk.ApplicationWindow):
         f.set_name('图片')
         f.add_pixbuf_formats()
         dialog.add_filter(f)
-        if dialog.run() == Gtk.ResponseType.OK:
+        with self.modal(dialog):
+            response = dialog.run()
+        if response == Gtk.ResponseType.OK:
             path = dialog.get_filename()
             dialog.destroy()
             self.open_path(path)
@@ -1076,7 +1117,9 @@ class Editor(Gtk.ApplicationWindow):
         buffer.place_cursor(buffer.get_end_iter())
         text.grab_focus()
         result = None
-        if dialog.run() == Gtk.ResponseType.OK:
+        with self.modal(dialog):
+            response = dialog.run()
+        if response == Gtk.ResponseType.OK:
             result = (buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True),
                       int(size.get_value()))
         dialog.destroy()
@@ -1130,7 +1173,9 @@ class Editor(Gtk.ApplicationWindow):
         dialog.set_current_folder(str(folder))
         dialog.set_current_name('截图_' + datetime.now().strftime('%Y-%m-%d_%H-%M-%S') + '.png')
         result = False
-        if dialog.run() == Gtk.ResponseType.OK:
+        with self.modal(dialog):
+            response = dialog.run()
+        if response == Gtk.ResponseType.OK:
             path = Path(dialog.get_filename())
             if path.suffix.lower() != '.png':
                 path = Path(str(path)+'.png')
@@ -1139,8 +1184,11 @@ class Editor(Gtk.ApplicationWindow):
                 overwrite = Gtk.MessageDialog(transient_for=dialog, modal=True,
                     message_type=Gtk.MessageType.QUESTION, buttons=Gtk.ButtonsType.YES_NO,
                     text=f'覆盖已有文件 {path.name}？')
-                allowed = overwrite.run() == Gtk.ResponseType.YES
-                overwrite.destroy()
+                try:
+                    with self.modal(overwrite):
+                        allowed = overwrite.run() == Gtk.ResponseType.YES
+                finally:
+                    overwrite.destroy()
                 if not allowed:
                     dialog.destroy()
                     return False
@@ -1201,6 +1249,11 @@ class Editor(Gtk.ApplicationWindow):
     def closing(self, *_):
         if hasattr(self, 'canvas'):
             self.canvas.cancel_tap_edit()
+        if self.modal_dialogs:
+            # Answer the open dialog first instead of stacking another one and
+            # leaving the window in a state it cannot leave.
+            self.present_modals()
+            return True
         return not self.can_replace()
 
     def _destroyed(self, *_):
@@ -1300,6 +1353,17 @@ class App(Gtk.Application):
 
     def do_command_line(self, command):
         args = command.get_arguments()[1:]
+        if self.editor and self.editor.modal_dialogs:
+            # A dialog is running its own GTK loop. Never hide the window or open
+            # another dialog from here; just make sure the dialog is on screen.
+            LOG.info('Ignored command line while a dialog is open: %s', args)
+            self.editor.present_modals()
+            return 1 if '--quit' in args else 0
+        if self.editor and (self.portal or self.capture_pending) and '--quit' not in args:
+            # The portal completion re-shows and presents the editor; opening a
+            # dialog in between would let that show_all() cover it.
+            LOG.info('Ignored command line while a capture is pending: %s', args)
+            return 0
         if '--quit' in args:
             if self.editor and not self.editor.can_replace():
                 return 1
@@ -1334,6 +1398,11 @@ class App(Gtk.Application):
     def capture(self):
         if self.editor and self.editor.settings_dialog:
             self.editor.settings_dialog.present()
+            return
+        if self.editor and self.editor.modal_dialogs:
+            # Hiding the editor while a dialog runs would let the completion
+            # handler raise the window above that dialog; keep the dialog visible.
+            self.editor.present_modals()
             return
         if self.portal or self.capture_pending:
             return
